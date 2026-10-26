@@ -23,9 +23,14 @@ import { clearCachedModels } from '../../providers/adapters/acp'
 import { KasBundleCard } from './KasBundleCard'
 import { KiroSignInCard } from './KiroSignInCard'
 import { KIRO_SIGN_IN_BACKEND } from './kiroSignInLink'
+import GatewaySetupStep from '../../components/GatewaySetupStep'
 
 /** The config field the switch owns. Also the schema path the options are gated on. */
 const CONFIG_KEY = 'agent.acp_backend'
+
+/** The foreign "own gateway" backend. Switching TO it needs base_url + api_key,
+ *  so its Use runs the gateway setup/switch flow rather than a bare PATCH. */
+const DEEPSEEK_GATEWAY_BACKEND = 'deepseek'
 
 /** Backend ids in the config vocabulary the schema, probe rows and PATCH share. */
 const KIRO = ACP_BACKEND_KIRO
@@ -309,6 +314,10 @@ export function AgentBackendTab() {
    * offers no dismissal and no consistent place to look.
    */
   const [actionError, setActionError] = useState('')
+  // Open the gateway setup wizard when the operator switches TO the DeepSeek
+  // "own gateway" backend and it has no base_url/api_key yet. The wizard's apply
+  // writes the config AND flips acp_backend; a configured deepseek flips directly.
+  const [gatewayWizard, setGatewayWizard] = useState(false)
   /**
    * Which row's detail is on screen, or `null` for "follow the active backend".
    *
@@ -430,6 +439,27 @@ export function AgentBackendTab() {
    * one row is both cheaper than a refetch and the only way the fresh verdict
    * survives inside the poll's TTL window.
    */
+  /**
+   * Switch TO the DeepSeek gateway backend. Unlike a bare PATCH this asks the
+   * server whether the gateway is configured: a configured one flips
+   * acp_backend straight away; an unconfigured one answers `needs_wizard`, and
+   * we open the setup wizard instead of leaving a chosen-but-unconfigured state.
+   */
+  const gatewaySwitchMut = useMutation({
+    mutationFn: () => api.gatewaySetupSwitch(DEEPSEEK_GATEWAY_BACKEND),
+    onSuccess: res => {
+      if (res.code === 'needs_wizard') {
+        setGatewayWizard(true)
+        return
+      }
+      setActionError('')
+      applyBackendSwitchSideEffects()
+      void qc.invalidateQueries({ queryKey: ['kirocrewConfig'] })
+    },
+    onError: () =>
+      setActionError(i18nT('pages.developer.agentBackendTab.could_not_save_the_agent_backend')),
+  })
+
   const spliceProbeRow = (row: AcpBackendProbe) =>
     qc.setQueryData<{ backends: AcpBackendProbe[] }>(['acpBackends'], prev =>
       prev
@@ -1390,6 +1420,22 @@ export function AgentBackendTab() {
     )
   }
 
+  if (gatewayWizard) {
+    return (
+      <SettingsCard>
+        <GatewaySetupStep
+          onApplied={() => {
+            setGatewayWizard(false)
+            applyBackendSwitchSideEffects()
+            void qc.invalidateQueries({ queryKey: ['kirocrewConfig'] })
+            void qc.invalidateQueries({ queryKey: ['acpBackends'] })
+          }}
+          onCancel={() => setGatewayWizard(false)}
+        />
+      </SettingsCard>
+    )
+  }
+
   return (
     <>
       {/* `askAgent` is ON, and the rule makes that the author's call rather than the
@@ -1514,7 +1560,15 @@ export function AgentBackendTab() {
                               // model list. The button is absent on the active
                               // harness; this is the second guard, because an
                               // absence is a render away from being wrong.
-                              if (value !== current) patchMut.mutate(value)
+                              // deepseek "own gateway" cannot start without
+                              // base_url/api_key, so it goes through the switch
+                              // endpoint (which opens the wizard when
+                              // unconfigured) rather than a bare backend PATCH.
+                              if (value === DEEPSEEK_GATEWAY_BACKEND) {
+                                gatewaySwitchMut.mutate()
+                              } else if (value !== current) {
+                                patchMut.mutate(value)
+                              }
                             }
                           : undefined
                       }

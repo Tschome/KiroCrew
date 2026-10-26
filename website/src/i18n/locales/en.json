@@ -5944,6 +5944,23 @@
       "moreCols": "more columns",
       "fewerRows": "fewer rows",
       "moreRows": "more rows"
+    },
+    "gatewaySetup": {
+      "configure_your_model_gateway": "Configure your model gateway",
+      "intro": "Enter your OpenAI-compatible gateway so Kiro Crew can run models without a Kiro account. Nothing is sent to the Kiro cloud.",
+      "base_url": "Gateway base URL",
+      "api_key": "API key",
+      "default_model": "Default model",
+      "fetch_models": "Fetch models from gateway",
+      "fetching_models": "Fetching…",
+      "model_placeholder": "e.g. deepseek-chat",
+      "save_and_continue": "Save and continue",
+      "saving": "Saving…",
+      "cancel": "Cancel",
+      "base_url_and_key_required": "Enter the base URL and API key first.",
+      "no_models_returned": "The gateway returned no models. You can type a model name instead.",
+      "could_not_reach_gateway": "Could not reach the gateway. Check the URL and key, or type a model name.",
+      "could_not_save": "Could not save the gateway configuration."
     }
   },
   "hooks": {

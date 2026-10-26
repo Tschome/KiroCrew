@@ -28,6 +28,17 @@ export interface KiroPrerequisiteStatus {
   bundled_cli: boolean
   setup_allowed: boolean
   /**
+   * Non-empty when a FOREIGN backend (`agent.acp_backend` != "", e.g.
+   * `"deepseek"`) is configured: the gateway short-circuits the kiro-cli probe
+   * and reports ready, carrying the backend id here. The onboarding flow
+   * branches on it — a truthy value means "do not render the Kiro login /
+   * 'could not check Kiro CLI' step; the user chose their own gateway" and
+   * routes to the gateway setup wizard instead. Absent/empty means the default
+   * kiro backend, which keeps the existing Kiro login flow unchanged. Optional
+   * because a gateway older than this field does not send it.
+   */
+  foreign_backend?: string
+  /**
    * True when the CLI binary is present and executable but could not be
    * VERIFIED because this host cannot build a sandbox (verification runs the
    * binary inside it). A categorically different condition from a missing
@@ -350,6 +361,29 @@ export function createOnboardingEndpoints({ get, post, put, j, jNullable }: Clie
       post('/api/onboarding/import/apply', body).then(j) as Promise<AgentImportApplyResponse>,
     onboardingImportState: (body: { completed: true }) =>
       put('/api/onboarding/import/state', body).then(jNullable) as Promise<{ ok?: boolean } | null>,
+    // First-run gateway setup for the DeepSeek Harness "own gateway" path. All
+    // three are owner-gated POSTs. `probe-models` is read-only (populates the
+    // wizard's default-model picker); `apply` writes the vault key + config and
+    // flips acp_backend to deepseek; `switch` is the Settings-side backend swap.
+    gatewaySetupProbeModels: (base_url: string, api_key: string) =>
+      post('/api/gateway-setup/probe-models', { base_url, api_key }).then(j) as Promise<
+        { models?: string[]; error?: string; code?: string }
+      >,
+    gatewaySetupApply: (body: { base_url: string; api_key: string; default_model?: string }) =>
+      post('/api/gateway-setup/apply', body).then(j) as Promise<{
+        ok?: boolean
+        applied?: string[]
+        acp_backend?: string
+        error?: string
+        code?: string
+      }>,
+    gatewaySetupSwitch: (backend: '' | 'deepseek') =>
+      post('/api/gateway-setup/switch', { backend }).then(j) as Promise<{
+        ok?: boolean
+        backend?: string
+        code?: string
+        effective?: string
+      }>,
   }
 
   return { readiness }

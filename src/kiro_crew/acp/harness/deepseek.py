@@ -118,6 +118,18 @@ DEEPSEEK_GATE_EXTENSION_SHA256 = "d95796f59d8e30f840dbb12ad4253c18f09e5b3972435e
 # nothing about whether Crew is consulted, because it never is.
 _ENV_DEEPSEEK_PERMISSION_MODE = "DSH_PERMISSION_MODE"
 
+# The env var the harness reads its OpenAI-compatible gateway base URL from.
+# Fed from the KiroCrew config field ``agent.deepseek_base_url`` (NOT from
+# ``agent.deepseek_env``: a base URL is not a credential and its name does not
+# match the harness's KEY|PASSWORD|SECRET|TOKEN child-scrub class, so it cannot
+# ride that mapping). The name is a MIRROR of the harness's own convention;
+# dsh is bundled at build time and is not resolvable from this source tree, so
+# if a future harness release renames it this one constant is the single edit.
+# It is deliberately outside every scrub prefix (see sandbox_tiers
+# _SENSITIVE_ENV_PREFIXES: AWS_SECRET/AWS_SESSION/SSH_AUTH_SOCK/GNUPGHOME/
+# GIT_ASKPASS), so it survives the agent-subprocess scrub into the harness child.
+_ENV_DEEPSEEK_BASE_URL = "DEEPSEEK_BASE_URL"
+
 # The posture Crew pins: confined to the workspace rather than unconfined. Defence
 # in depth and nothing more, because it does not make this harness's tool calls reach
 # Crew's gate.
@@ -416,6 +428,20 @@ def _deepseek_vault_env() -> tuple[dict[str, str], tuple[str, ...]]:
         mapping, Path(config_dir()), subject="agent.deepseek_env"
     )
     return resolved, tuple(sorted(secret_keys))
+
+
+def _deepseek_base_url() -> str:
+    """The configured ``agent.deepseek_base_url``, or '' when unset.
+
+    Read off the event loop by the caller (it touches config.json). Lazy config
+    import for this module's usual reason -- ``config.loader`` reaches this module
+    through ``acp.session_handle``. A base URL is not a secret: it is injected as a
+    plain env var and carries no vault reference, so there is nothing to resolve or
+    scrub here.
+    """
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    return str(KiroCrewConfig.load().agent.deepseek_base_url or "")
 
 
 def _read_deepseek_gate_marker(marker_path: str) -> object:
@@ -870,3 +896,12 @@ class DeepseekLaunch(ProcessAdapter):
         # shells by name CLASS, not by a list Crew hands it, and nothing on this side
         # reads them later.
         deepseek_env.clear()
+        # The gateway base URL from the KiroCrew config field, injected as a plain
+        # env var the harness reads. Not a secret and not a vault reference, so it
+        # is set directly rather than resolved; off-loop because it reads
+        # config.json. Only set when configured -- an empty value leaves the harness
+        # on its own default endpoint, so the desktop "own gateway" path controls it
+        # while a locally-served model path (no base URL) is untouched.
+        base_url = await to_thread(_deepseek_base_url)
+        if base_url:
+            env[_ENV_DEEPSEEK_BASE_URL] = base_url

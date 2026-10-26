@@ -1681,6 +1681,21 @@ class AgentConfig:
             "other backend.",
         ),
     )
+    deepseek_base_url: str = field(
+        default="",
+        metadata=_meta(
+            "DeepSeek Harness base URL",
+            "Base URL of the OpenAI-compatible gateway the DeepSeek Harness "
+            "('deepseek' backend) sends model requests to, e.g. "
+            "'http://10.3.20.46:4000/v1'. Read by the harness at spawn and injected "
+            "as an environment variable the harness honours; unlike the provider "
+            "key this is NOT a secret and NOT routed through agent.deepseek_env "
+            "(whose names must match KEY/PASSWORD/SECRET/TOKEN so the harness "
+            "withholds them from its shell children -- a base URL does not). Empty "
+            "means the harness uses its own default endpoint. Ignored by every "
+            "other backend.",
+        ),
+    )
     sweep_agents_backups: bool = field(
         default=False,
         metadata=_meta(

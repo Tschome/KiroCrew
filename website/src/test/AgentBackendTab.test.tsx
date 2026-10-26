@@ -32,12 +32,14 @@ const {
   schemaMock,
   acpBackendsMock,
   acpBackendRecheckMock,
+  gatewaySetupSwitchMock,
 } = vi.hoisted(() => ({
   patchConfigMock: vi.fn(() => Promise.resolve({})),
   kirocrewConfigMock: vi.fn(() => Promise.resolve({ agent: { acp_backend: 'kiro' } })),
   schemaMock: vi.fn(),
   acpBackendsMock: vi.fn(),
   acpBackendRecheckMock: vi.fn(),
+  gatewaySetupSwitchMock: vi.fn(),
 }))
 
 vi.mock('../api/client', () => ({
@@ -46,7 +48,27 @@ vi.mock('../api/client', () => ({
     patchConfig: patchConfigMock,
     acpBackends: acpBackendsMock,
     acpBackendRecheck: acpBackendRecheckMock,
+    gatewaySetupSwitch: gatewaySetupSwitchMock,
   },
+}))
+
+// The DeepSeek "own gateway" wizard is a sentinel here: its four internal paths are
+// pinned in GatewaySetupStep.test.tsx. These tests are about the tab's WIRING —
+// that picking the deepseek backend routes through the switch endpoint and opens
+// this wizard on `needs_wizard` — so the real component (which would need the
+// gateway-setup API this file does not mock) is stubbed to a probe surface that
+// fires its callbacks on demand.
+vi.mock('../components/GatewaySetupStep', () => ({
+  default: ({ onApplied, onCancel }: { onApplied: () => void; onCancel: () => void }) => (
+    <div data-testid="gateway-setup-wizard">
+      <button type="button" onClick={onApplied}>
+        wizard-applied
+      </button>
+      <button type="button" onClick={onCancel}>
+        wizard-cancel
+      </button>
+    </div>
+  ),
 }))
 
 vi.mock('../components/settingRef/useConfigSchema', () => ({
@@ -238,6 +260,8 @@ beforeEach(() => {
   kirocrewConfigMock.mockClear()
   kirocrewConfigMock.mockResolvedValue({ agent: { acp_backend: 'kiro' } })
   acpBackendRecheckMock.mockClear()
+  gatewaySetupSwitchMock.mockClear()
+  gatewaySetupSwitchMock.mockResolvedValue({ ok: true, acp_backend: 'deepseek' })
   // The shipped core: every known agent is selectable. Claude Code is in the public
   // baseline because acp/client.py owns its whole spawn path and the adapter it needs
   // is a public npm package -- the only thing that used to be missing was the switch.
@@ -877,6 +901,107 @@ describe('AgentBackendTab switching', () => {
     await waitFor(() => expect(reset).toHaveBeenCalledWith({ queryKey: ['available-models'] }))
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['kirocrewConfig'] })
     expect(qc.getQueryData(['available-models', 'acp'])).toBeUndefined()
+  })
+})
+
+describe('AgentBackendTab deepseek gateway switch', () => {
+  // The deepseek "own gateway" backend cannot start without base_url + api_key, so
+  // its Use routes through the switch endpoint (which opens the wizard when
+  // unconfigured) rather than the bare `patchConfig` every other backend uses.
+  function withDeepseek() {
+    acpBackendsMock.mockResolvedValue({
+      backends: [probeRow('kiro', card()), probeRow('deepseek', card())],
+    })
+    schemaMock.mockReturnValue(schemaWith(['kiro', 'deepseek']))
+  }
+
+  it('routes the deepseek Use through the switch endpoint, not a bare patchConfig', async () => {
+    withDeepseek()
+    wrap()
+    await waitFor(() => expect(row('deepseek')).toBeInTheDocument())
+    highlight('deepseek')
+    fireEvent.click(useButton('deepseek'))
+    await waitFor(() => expect(gatewaySetupSwitchMock).toHaveBeenCalledWith('deepseek'))
+    // A deepseek pick never writes the backend field directly: an unconfigured one
+    // would be a chosen-but-unusable state.
+    expect(patchConfigMock).not.toHaveBeenCalled()
+  })
+
+  it('opens the setup wizard when the gateway is not configured yet', async () => {
+    // `needs_wizard` is the server's answer that base_url/api_key are missing. The
+    // tab replaces the list with the wizard rather than leaving deepseek chosen but
+    // unusable.
+    gatewaySetupSwitchMock.mockResolvedValue({ ok: false, code: 'needs_wizard' })
+    withDeepseek()
+    wrap()
+    await waitFor(() => expect(row('deepseek')).toBeInTheDocument())
+    highlight('deepseek')
+    fireEvent.click(useButton('deepseek'))
+    await waitFor(() => expect(screen.getByTestId('gateway-setup-wizard')).toBeInTheDocument())
+    // The backend field is still untouched: the wizard's own apply flips it.
+    expect(patchConfigMock).not.toHaveBeenCalled()
+  })
+
+  it('switches straight to a gateway that is already configured, no wizard', async () => {
+    // A configured gateway answers with the switch done; the tab applies the
+    // backend-switch side effects and never opens the wizard.
+    gatewaySetupSwitchMock.mockResolvedValue({ ok: true, acp_backend: 'deepseek' })
+    const { qc } = wrapWithClient()
+    const reset = vi.spyOn(qc, 'resetQueries')
+    withDeepseek()
+    await waitFor(() => expect(row('deepseek')).toBeInTheDocument())
+    highlight('deepseek')
+    fireEvent.click(useButton('deepseek'))
+    await waitFor(() => expect(gatewaySetupSwitchMock).toHaveBeenCalledWith('deepseek'))
+    // No wizard, and the model-list cache is reset like any other switch.
+    expect(screen.queryByTestId('gateway-setup-wizard')).toBeNull()
+    await waitFor(() => expect(reset).toHaveBeenCalledWith({ queryKey: ['available-models'] }))
+  })
+
+  it('closes the wizard and refreshes the config when its apply succeeds', async () => {
+    // onApplied flips back to the list and invalidates config + probe, so the
+    // foreign early-return re-reads ready and the row shows deepseek in use.
+    gatewaySetupSwitchMock.mockResolvedValue({ ok: false, code: 'needs_wizard' })
+    const { qc } = wrapWithClient()
+    const invalidate = vi.spyOn(qc, 'invalidateQueries')
+    withDeepseek()
+    await waitFor(() => expect(row('deepseek')).toBeInTheDocument())
+    highlight('deepseek')
+    fireEvent.click(useButton('deepseek'))
+    await waitFor(() => expect(screen.getByTestId('gateway-setup-wizard')).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'wizard-applied' }))
+    await waitFor(() => expect(screen.queryByTestId('gateway-setup-wizard')).toBeNull())
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['kirocrewConfig'] })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['acpBackends'] })
+    // Back to the row list.
+    expect(row('deepseek')).toBeInTheDocument()
+  })
+
+  it('closes the wizard and writes nothing when it is cancelled', async () => {
+    gatewaySetupSwitchMock.mockResolvedValue({ ok: false, code: 'needs_wizard' })
+    withDeepseek()
+    wrap()
+    await waitFor(() => expect(row('deepseek')).toBeInTheDocument())
+    highlight('deepseek')
+    fireEvent.click(useButton('deepseek'))
+    await waitFor(() => expect(screen.getByTestId('gateway-setup-wizard')).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: 'wizard-cancel' }))
+    await waitFor(() => expect(screen.queryByTestId('gateway-setup-wizard')).toBeNull())
+    expect(patchConfigMock).not.toHaveBeenCalled()
+    expect(row('deepseek')).toBeInTheDocument()
+  })
+
+  it('surfaces a failed gateway switch rather than leaving it silent', async () => {
+    gatewaySetupSwitchMock.mockRejectedValue(new Error('boom'))
+    withDeepseek()
+    wrap()
+    await waitFor(() => expect(row('deepseek')).toBeInTheDocument())
+    highlight('deepseek')
+    fireEvent.click(useButton('deepseek'))
+    await waitFor(() =>
+      expect(screen.getByText('Could not save the agent backend.')).toBeInTheDocument(),
+    )
+    expect(screen.queryByTestId('gateway-setup-wizard')).toBeNull()
   })
 })
 

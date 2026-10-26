@@ -135,6 +135,61 @@ async def api_kiro_prerequisite_status(request: web.Request) -> web.Response:
     # real misconfiguration that must stay a 503, not be masked as a 200
     # not-ready. Only the probe itself is guarded.
     service = _service(request)
+
+    # FOREIGN-BACKEND EARLY RETURN (desktop "own gateway" path).
+    # A foreign backend (``agent.acp_backend`` non-empty, e.g. "deepseek") does
+    # not use kiro-cli at all: its dsh subprocess talks to the user's own
+    # gateway and KIRO_API_KEY is stripped at spawn. Running the kiro-cli probe
+    # here would surface a spurious "could not check Kiro CLI" / login gate for
+    # a user who deliberately chose not to log in. So short-circuit to a ready
+    # snapshot BEFORE the probe, carrying ``foreign_backend`` so the SPA can
+    # branch onboarding to the gateway wizard instead of the Kiro login step.
+    # The default kiro backend (empty string == ACP_BACKEND_KIRO) falls through
+    # to the existing probe path below, byte-for-byte unchanged.
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KIRO
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    try:
+        configured = await asyncio.to_thread(KiroCrewConfig.load)
+        effective_backend = configured.agent.acp_backend
+    except Exception:
+        # A config read failure must not be fatal here: fall through to the
+        # normal kiro probe path, which has its own retryable degradation.
+        logger.debug(
+            "Could not read acp_backend for prerequisite short-circuit", exc_info=True
+        )
+        effective_backend = ACP_BACKEND_KIRO
+
+    if effective_backend != ACP_BACKEND_KIRO:
+        foreign_snapshot: dict[str, Any] = asdict(
+            PrerequisiteStatus(
+                platform="gateway",
+                installed=True,
+                authenticated=True,
+                ready=True,
+                initial_setup_complete=bool(service.initial_setup_complete),
+            )
+        )
+        foreign_snapshot["repair_required"] = False
+        foreign_snapshot["foreign_backend"] = effective_backend
+        # See _LEGACY_IDLE_OPERATION: a pre-upgrade tab crashes without this key.
+        foreign_snapshot["operation"] = legacy_idle_operation()
+        if _is_dashboard_owner(request):
+            return web.json_response({**foreign_snapshot, "setup_allowed": True})
+        return web.json_response(
+            {
+                "platform": "gateway",
+                "installed": True,
+                "authenticated": True,
+                "ready": True,
+                "initial_setup_complete": bool(service.initial_setup_complete),
+                "repair_required": False,
+                "foreign_backend": effective_backend,
+                "setup_allowed": False,
+                "operation": legacy_idle_operation(),
+            }
+        )
+
     try:
         snapshot = await service.snapshot(force=explicit or auto, coalesce=auto)
     except asyncio.CancelledError:

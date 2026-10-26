@@ -134,6 +134,7 @@ from kiro_crew.dashboard.handlers.feedback import setup_feedback_routes
 from kiro_crew.dashboard.handlers.knowledge import setup_knowledge_routes
 from kiro_crew.dashboard.handlers.link_meta import setup_link_meta_routes
 from kiro_crew.dashboard.handlers.secrets import setup_secrets_routes
+from kiro_crew.dashboard.handlers.gateway_setup import setup_gateway_setup_routes
 from kiro_crew.dashboard.handlers.source_providers import (  # noqa: F401
     register_status_delta_sink,
     unregister_status_delta_sink,
@@ -1851,6 +1852,7 @@ async def start_dashboard(
     setup_weixin_routes(app)
     setup_feedback_routes(app)
     setup_secrets_routes(app)
+    setup_gateway_setup_routes(app)
     setup_whatsapp_routes(app)
 
     # Link previews (chat unfurl). Route is always registered; the handler gates

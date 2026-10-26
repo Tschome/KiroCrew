@@ -1,0 +1,9 @@
+# sha256 of each dsh artifact the build stages, sha256sum format:
+#   "<sha256>  <version>/<file>"
+# One line per artifact (arm64 + x64). Fill in when the dsh release coordinates
+# (DSH_RELEASE_BASE + artifact filenames in build-desktop.sh) are known; the
+# build fails closed on a missing/wrong line, so a placeholder here will NOT
+# silently ship an unverified binary.
+#
+# 0000000000000000000000000000000000000000000000000000000000000000  0.0.0-PLACEHOLDER/dsh-arm64.zip
+# 0000000000000000000000000000000000000000000000000000000000000000  0.0.0-PLACEHOLDER/dsh-x64.zip

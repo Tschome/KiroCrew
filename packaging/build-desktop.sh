@@ -1077,6 +1077,99 @@ KIRO_CLI_PIN_FILE="$ROOT/packaging/kiro-cli-version"
 KIRO_CLI_SHA_FILE="$ROOT/packaging/kiro-cli-sha256"
 KIRO_CLI_VERSION="${KIRO_CLI_VERSION:-$(tr -d '[:space:]' < "$KIRO_CLI_PIN_FILE")}"
 
+# ── dsh (DeepSeek Harness) bundle — change ① of the dsh-desktop spec ──
+# Mirrors the kiro-cli bundle mechanism above so the "own gateway" desktop path
+# ships a ready-to-run dsh with no `npm i dsh` on the user's machine.
+# BUNDLE_DSH=0 opts out (the app then needs a dsh on PATH / DSH_BIN).
+#
+# IMPORTANT (release coordinates not yet known): dsh is not distributed in a way
+# this source tree can see, so DSH_RELEASE_BASE and the per-arch artifact file
+# names below are PLACEHOLDERS. Fill them from dsh's real release, then record
+# the matching sha256 lines in packaging/dsh-sha256. Until then a real build
+# must pass BUNDLE_DSH=0, or the sha gate fails CLOSED (by design — it never
+# ships an unverified or fabricated binary).
+DSH_RELEASE_BASE="${DSH_RELEASE_BASE:-https://REPLACE-ME.example.com/dsh}"
+DSH_PIN_FILE="$ROOT/packaging/dsh-version"
+DSH_SHA_FILE="$ROOT/packaging/dsh-sha256"
+DSH_VERSION="${DSH_VERSION:-$(tr -d '[:space:]' < "$DSH_PIN_FILE")}"
+
+# sha256 of one pinned dsh artifact, read from DSH_SHA_FILE (same format and
+# fail-closed semantics as pinned_kiro_cli_sha).
+pinned_dsh_sha() {
+  awk -v want="$1" '/^[[:space:]]*#/ { next } { name = $0
+    sub(/^[0-9a-f]+[ \t]+/, "", name)
+    if (name == want) { print $1; exit } }' "$DSH_SHA_FILE"
+}
+
+# Layout gate for the staged dsh copy — same contract as kiro_cli_layout_gate:
+# no nested macOS bundle the per-file signer cannot seal.
+#   $1 = staged dsh dir
+dsh_layout_gate() {
+  local dest="$1" nested
+  nested="$(find "$dest" -type d \( -name '*.app' -o -name '*.framework' -o -name '*.appex' \
+    -o -name '*.xpc' -o -name '*.bundle' -o -name '*.plugin' \) -print -quit 2>/dev/null)"
+  if [ -n "$nested" ]; then
+    echo "ERROR: bundled dsh carries a nested bundle the signer cannot seal per-file:" >&2
+    echo "       $nested" >&2
+    exit 1
+  fi
+  # dsh ships napi native modules (*.node); at least one must be present per
+  # staged arch, and they must NOT be shared across arches (a cross-arch .node
+  # fails to load at runtime). The caller stages into backend-dist/dsh-<arch>/,
+  # so this gate runs once per arch dir.
+  if ! find "$dest" -name '*.node' -print -quit 2>/dev/null | grep -q .; then
+    echo "ERROR: staged dsh at $dest has no *.node native module" >&2
+    exit 1
+  fi
+}
+
+# Stage dsh for ONE arch into backend-dist/dsh-<arch>/, sha-verified against the
+# pin. Mirrors fetch_kiro_cli's cache + fresh-temp + rename + sha-check shape.
+#   $1 = arch label used in the artifact name and dest dir (arm64 | x64)
+fetch_dsh_arch() {
+  local arch="$1"
+  local dest="$ELECTRON_DIR/backend-dist/dsh-$arch"
+  local cache="$HOME/.cache/kirocrew-build/dsh"
+  local file="dsh-$arch.zip"            # PLACEHOLDER artifact name
+  local rel="$DSH_VERSION/$file"
+  local url="$DSH_RELEASE_BASE/$rel"
+  mkdir -p "$cache" "$dest"
+
+  local want
+  want="$(pinned_dsh_sha "$rel")"
+  if [ -z "$want" ]; then
+    echo "ERROR: no sha256 pin for dsh artifact '$rel' in $DSH_SHA_FILE." >&2
+    echo "       Fill packaging/dsh-version + packaging/dsh-sha256 from dsh's" >&2
+    echo "       real release, or build with BUNDLE_DSH=0 to ship without dsh." >&2
+    exit 1
+  fi
+
+  local archive fresh
+  archive="$cache/$DSH_VERSION-$file"
+  if [ ! -f "$archive" ] || ! kiro_cli_sha_ok "$want" "$archive"; then
+    fresh="$(mktemp "$cache/.dsh.XXXXXX")"
+    curl --proto '=https' --tlsv1.2 -fsSL "$url" -o "$fresh"
+    if ! kiro_cli_sha_ok "$want" "$fresh"; then
+      rm -f "$fresh"
+      echo "ERROR: dsh artifact $rel failed its sha256 pin check." >&2
+      exit 1
+    fi
+    mv -f "$fresh" "$archive"
+  fi
+
+  rm -rf "$dest"; mkdir -p "$dest"
+  unzip -q "$archive" -d "$dest"
+  dsh_layout_gate "$dest"
+  log "Staged dsh $DSH_VERSION ($arch) into $dest"
+}
+
+# Stage every arch this build signs (the arm64/x64 double tree, mirroring the
+# backend dual-tree the build already produces).
+fetch_dsh() {
+  fetch_dsh_arch "arm64"
+  fetch_dsh_arch "x64"
+}
+
 # Layout gate for the staged copy. packaging/signing/generate-manifest.py signs
 # every loose Mach-O under Contents/Resources per file, but FAILS the sign on a
 # nested bundle there (the suffixes below mirror its _BUNDLE_SUFFIXES): bundles
@@ -1427,6 +1520,17 @@ if [ "${BUNDLE_KIRO_CLI:-1}" = "1" ]; then
   fetch_kiro_cli
 else
   log "BUNDLE_KIRO_CLI=0: app ships without a bundled kiro-cli"
+fi
+
+# dsh (DeepSeek Harness) — change ① of the dsh-desktop spec. Defaults OFF until
+# the dsh release coordinates (DSH_RELEASE_BASE + artifact names + sha pins) are
+# filled in; flip the default to 1 in that same commit. When on, fetch_dsh
+# stages the arm64/x64 double tree, sha-verified, which the signing step below
+# then covers (packaging/signing + resign-macos-libs.sh include backend-dist/).
+if [ "${BUNDLE_DSH:-0}" = "1" ]; then
+  fetch_dsh
+else
+  log "BUNDLE_DSH=0: app ships without a bundled dsh (set BUNDLE_DSH=1 once dsh release coords are pinned)"
 fi
 
 # --- 4. Package the desktop app with electron-builder -----------------------

@@ -32,6 +32,7 @@ import { safeGetItem, safeSetItem } from '../utils/safeStorage'
 import { useScrollEdgesY } from '../hooks/useScrollEdges'
 import { Badge, Btn, Card, SendBtn } from './ui'
 import ErrorNotice from './ErrorNotice'
+import GatewaySetupStep from './GatewaySetupStep'
 import {
   AgentDetailActions,
   AgentInstallDetail,
@@ -43,6 +44,10 @@ import {
 import { Trans } from 'react-i18next'
 import { i18nT } from '../i18n/t'
 const QUERY_KEY = ['kiro-prerequisite'] as const
+// The foreign "own gateway" backend id. Its Use opens the gateway setup wizard
+// (base_url + api_key) rather than a bare backend switch, because it cannot
+// start without that config.
+const DEEPSEEK_GATEWAY_BACKEND = 'deepseek'
 
 export function kiroPrerequisiteRefetchInterval(
   status: KiroPrerequisiteStatus | undefined,
@@ -1129,6 +1134,11 @@ function OtherCodingAgents({
   const configuredOther = configured !== KIRO_BACKEND ? configured : ''
   const [open, setOpen] = useState(() => configuredOther !== '')
   const [picked, setPicked] = useState<string | null>(null)
+  // When the user picks the DeepSeek "own gateway" backend it needs base_url +
+  // api_key before it can start, so Use opens the setup wizard instead of a bare
+  // backend switch. The wizard's apply writes the config AND flips acp_backend,
+  // after which the prerequisite re-read admits the dashboard (foreign ready).
+  const [gatewayWizard, setGatewayWizard] = useState(false)
   // Resolved every render, like Settings → Agent Harness's highlight: the list arrives
   // after first paint, so seeding state would pin the choice to a guess.
   const shownId =
@@ -1195,6 +1205,26 @@ function OtherCodingAgents({
   const configuredNotReady = !!(
     configuredOther && configuredProbe && !configuredBackendCanStart(status, configuredProbe)
   )
+
+  if (gatewayWizard) {
+    return (
+      <div className="mb-5" data-testid="gateway-setup-wizard">
+        <GatewaySetupStep
+          onApplied={() => {
+            setGatewayWizard(false)
+            // apply flipped acp_backend to deepseek; drop cached model lists and
+            // re-read config + prerequisite so the foreign early-return admits
+            // the dashboard.
+            clearCachedModels()
+            void qc.resetQueries({ queryKey: ['available-models'] })
+            void qc.invalidateQueries({ queryKey: CONFIG_QUERY_KEY })
+            void qc.invalidateQueries({ queryKey: QUERY_KEY })
+          }}
+          onCancel={() => setGatewayWizard(false)}
+        />
+      </div>
+    )
+  }
 
   return (
     <div className="mb-5 rounded-xl border border-border bg-bg-elevated/40" data-testid="other-coding-agents">
@@ -1350,7 +1380,13 @@ function OtherCodingAgents({
                               change the verdict. */}
                           <AgentDetailActions
                             name={name}
-                            onUse={() => switchMut.mutate(shown.id)}
+                            onUse={() => {
+                              if (shown.id === DEEPSEEK_GATEWAY_BACKEND) {
+                                setGatewayWizard(true)
+                              } else {
+                                switchMut.mutate(shown.id)
+                              }
+                            }}
                             useDisabled={!configuredBackendCanStart(status, shown)}
                             busy={busy}
                             switching={switchMut.isPending && switchMut.variables === shown.id}
